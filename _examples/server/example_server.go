@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"runtime"
 
 	"github.com/porthos-rpc/porthos-go/broker"
 	"github.com/porthos-rpc/porthos-go/log"
@@ -19,7 +20,7 @@ func main() {
 	}
 
 	// create the RPC server.
-	userService, err := server.NewServer(b, "UserService", server.Options{MaxWorkers: 40, AutoAck: false})
+	userService, err := server.NewServer(b, "UserService", server.Options{AutoAck: false})
 	defer userService.Close()
 
 	// create and add the built-in metrics shipper.

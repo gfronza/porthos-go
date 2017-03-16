@@ -16,14 +16,12 @@ type MethodHandler func(req Request, res Response)
 type Server struct {
 	m              sync.Mutex
 	broker         *broker.Broker
-	jobQueue       chan Job
 	serviceName    string
 	channel        *amqp.Channel
 	requestChannel <-chan amqp.Delivery
 	methods        map[string]MethodHandler
 	autoAck        bool
 	extensions     []*Extension
-	maxWorkers     int
 	topologySet    bool
 
 	closed bool
@@ -32,27 +30,18 @@ type Server struct {
 
 // Options represent all the options supported by the server.
 type Options struct {
-	MaxWorkers int
-	AutoAck    bool
+	AutoAck bool
 }
 
 var servePollInterval = 500 * time.Millisecond
 
 // NewServer creates a new instance of Server, responsible for executing remote calls.
 func NewServer(b *broker.Broker, serviceName string, options Options) (*Server, error) {
-	maxWorkers := options.MaxWorkers
-
-	if maxWorkers <= 0 {
-		maxWorkers = 100
-	}
-
 	s := &Server{
 		broker:      b,
 		serviceName: serviceName,
 		methods:     make(map[string]MethodHandler),
-		jobQueue:    make(chan Job, maxWorkers),
 		autoAck:     options.AutoAck,
-		maxWorkers:  maxWorkers,
 	}
 
 	err := s.setupTopology()
@@ -126,11 +115,6 @@ func (s *Server) handleReestablishedConnnection() {
 	}
 }
 
-func (s *Server) startWorkers(maxWorkers int) {
-	dispatcher := NewDispatcher(s.jobQueue, maxWorkers)
-	dispatcher.Run()
-}
-
 func (s *Server) serve() {
 	for !s.closed {
 		if s.topologySet {
@@ -139,7 +123,7 @@ func (s *Server) serve() {
 			log.Info("Connected to the broker and waiting for incoming rpc requests...")
 
 			for d := range s.requestChannel {
-				s.processRequest(d)
+				go s.processRequest(d)
 			}
 
 			s.topologySet = false
@@ -169,11 +153,14 @@ func (s *Server) processRequest(d amqp.Delivery) {
 
 		resWriter := &responseWriter{delivery: d, channel: s.channel, autoAck: s.autoAck}
 
-		// create the job with arguments and a response writer.
-		work := Job{Method: method, Request: req, ResponseWriter: resWriter}
+		res := newResponse()
+		method(req, res)
 
-		// queue the job.
-		s.jobQueue <- work
+		err := resWriter.Write(res)
+
+		if err != nil {
+			log.Error("Error writing response: '%s'", err.Error())
+		}
 	} else {
 		log.Error("Method '%s' not found.", methodName)
 		if !s.autoAck {
@@ -220,7 +207,6 @@ func (s *Server) AddExtension(ext *Extension) {
 
 // ListenAndServe start serving RPC requests.
 func (s *Server) ListenAndServe() {
-	s.startWorkers(s.maxWorkers)
 	s.serve()
 }
 
